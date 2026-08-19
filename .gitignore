@@ -1,0 +1,8 @@
+/bin/
+
+# Local Claude Code permission settings (machine-specific)
+/.claude/settings.local.json
+
+# Editor / OS
+.DS_Store
+*.swp

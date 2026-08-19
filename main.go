@@ -1,0 +1,15 @@
+package main
+
+import "github.com/ChaosHour/myrepl/cmd"
+
+// Set via -ldflags at build time (see Makefile).
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+func main() {
+	cmd.SetVersion(version, commit, date)
+	cmd.Execute()
+}
