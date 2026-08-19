@@ -15,7 +15,7 @@ import (
 
 func newDiagnoseCmd() *cobra.Command {
 	var replicaConn, sourceConn connFlags
-	var fix, fixReplica, fixMissingReplica, dryRun, force, stuck bool
+	var stuck bool
 
 	c := &cobra.Command{
 		Use:   "diagnose",
@@ -27,14 +27,15 @@ and reports:
     (e.g. a write that happened directly on the replica)
   - missing transactions: GTIDs the source has that the replica doesn't
 
+For each, it prints the commands that would resolve it (injecting empty
+transactions to mark the GTIDs as already applied). myrepl never runs these
+itself -- review them and run them yourself once you're sure they're right.
+
 With --stuck, if the replica's SQL thread is stopped, it also pinpoints the
 exact GTID it choked on (via performance_schema) and prints ready-to-run
 commands (mysqlbinlog) to inspect what that transaction actually does.
 
---fix / --fix-replica / --fix-missing-replica inject empty transactions to
-resolve what diagnose found; each prints a confirmation prompt (skip with
---yes) and supports --dry-run to preview without executing. This delegates
-to github.com/ChaosHour/go-gtids.`,
+This delegates to github.com/ChaosHour/go-gtids.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
@@ -63,12 +64,13 @@ to github.com/ChaosHour/go-gtids.`,
 			sourceHost, sourcePort := hostPort(sourceDSN, "source")
 			replicaHost, replicaPort := hostPort(replicaDSN, "replica")
 
+			// Fix/FixMissingReplica request go-gtids' detection of errant/missing
+			// transactions; DryRun keeps it to printing the statements that would
+			// resolve them, never executing anything.
 			unresolved, err := gtids.CheckGtidSetSubset(ctx, sourceDB, replicaDB, sourceHost, replicaHost, gtids.Options{
-				Fix:               fix,
-				FixReplica:        fixReplica,
-				FixMissingReplica: fixMissingReplica,
-				DryRun:            dryRun,
-				AssumeYes:         force,
+				Fix:               true,
+				FixMissingReplica: true,
+				DryRun:            true,
 			})
 			if err != nil {
 				return err
@@ -89,12 +91,7 @@ to github.com/ChaosHour/go-gtids.`,
 
 	replicaConn.register(c.Flags(), "", "replica")
 	sourceConn.register(c.Flags(), "source-", "source")
-	c.Flags().BoolVar(&fix, "fix", false, "apply errant GTIDs to the source (they replicate downstream, where they are auto-skipped)")
-	c.Flags().BoolVar(&fixReplica, "fix-replica", false, "apply errant GTIDs to the replica (stops/restarts replication)")
-	c.Flags().BoolVar(&fixMissingReplica, "fix-missing-replica", false, "mark missing GTIDs as executed on the replica WITHOUT applying their data (their data must be synced separately)")
 	c.Flags().BoolVar(&stuck, "stuck", false, "if the replica's SQL thread is stopped, pinpoint the exact stuck GTID and print commands to inspect it")
-	c.Flags().BoolVar(&dryRun, "dry-run", false, "print the statements a fix would execute without running them")
-	c.Flags().BoolVar(&force, "yes", false, "skip the confirmation prompt before applying fixes")
 
 	return c
 }
