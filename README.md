@@ -3,11 +3,17 @@
 A MySQL replication recovery CLI. Three commands:
 
 - **`status`** — read `SHOW REPLICA/SLAVE STATUS` as a clear, parsed summary
-- **`configure`** — safely repoint a broken replica at new log coordinates
-  (GTID auto-position or an explicit binlog file+position)
+- **`configure`** — validate a requested repoint (GTID auto-position or an
+  explicit binlog file+position) and print the statements that would apply it
 - **`diagnose`** — compare GTID sets between a source and replica, find
   errant/missing transactions, and pinpoint exactly what a stuck SQL thread
   choked on
+
+`myrepl` never executes a mutating statement against your database. Every
+command is read-only: `configure` prints a plan, `diagnose` prints the fix
+commands go-gtids would run. Review the output and run the statements
+yourself — copy/paste into a `mysql` session — once you're satisfied
+they're correct.
 
 It auto-detects, so you don't have to remember which MySQL version wants
 which words:
@@ -93,39 +99,45 @@ $ myrepl status --defaults-group-suffix=_replica1 --channel source_3
 ```console
 $ myrepl configure --defaults-group-suffix=_replica1 --channel source_3 \
     --source-defaults-group-suffix=_primary1 \
-    --log-file binlog.000061 --log-pos 277 --dry-run
+    --log-file binlog.000061 --log-pos 27614687 --force
 current state:
 channel:           source_3
 mode:              GTID
-...
-healthy:           true
-
-plan:
-  STOP REPLICA FOR CHANNEL 'source_3';
-  CHANGE REPLICATION SOURCE TO SOURCE_AUTO_POSITION = 0, SOURCE_LOG_FILE = 'binlog.000061', SOURCE_LOG_POS = 277 FOR CHANNEL 'source_3';
-  START REPLICA FOR CHANNEL 'source_3';
-
---dry-run: nothing executed
-```
-
-Drop `--dry-run` and it prompts before running the plan:
-
-```console
-$ myrepl configure --defaults-group-suffix=_replica1 --channel source_3 \
-    --gtid --force
-...
-run this plan? [y/N] y
-
-resulting state:
-channel:           source_3
-mode:              GTID
+source:            172.20.0.3:3306
 io thread:         Yes
 sql thread:        Yes
+seconds behind:    0
+source log file:   binlog.000061
+read pos:          27614687
+executed pos:      27614687
+retrieved gtids:   2ac8ec13-9255-11f0-8705-6238a95b9967:42629-42643,
+2af7e535-9255-11f0-87f8-76ae10baffb1:120062-120069
+executed gtids:    1d1fff5a-c9bc-11ed-9c19-02a36d996b94:123,
+2ac8ec13-9255-11f0-8705-6238a95b9967:1-42643,
+2af7e535-9255-11f0-87f8-76ae10baffb1:1-120076
 healthy:           true
+
+warning: replica currently looks healthy (both threads running, no errors) -- continuing: --force
+plan:
+  STOP REPLICA FOR CHANNEL 'source_3';
+  CHANGE REPLICATION SOURCE TO SOURCE_AUTO_POSITION = 0, SOURCE_LOG_FILE = 'binlog.000061', SOURCE_LOG_POS = 27614687 FOR CHANNEL 'source_3';
+  START REPLICA FOR CHANNEL 'source_3';
+
+myrepl does not execute plans -- run the statements above yourself once you're satisfied they're correct.
 ```
 
-`--yes` skips the prompt (for scripting); `--force` overrides the validation
-checks below (each one prints as a warning instead of aborting).
+`configure` only ever prints a plan — it never runs the statements itself.
+Without `--force` a healthy replica (both threads running, no errors) is
+refused outright, since `configure` is meant for recovery, not routine
+reconfiguration:
+
+```console
+$ myrepl configure --defaults-group-suffix=_replica1 --gtid
+error: replica currently looks healthy (both threads running, no errors) -- refusing to repoint it without --force
+```
+
+`--force` downgrades that and the other validation checks below from a hard
+error to a warning, so you can still see the plan it would have produced.
 
 **What it checks, all overridable with `--force`:**
 
@@ -149,12 +161,44 @@ while auto-position is still active (error 1776).
 ```console
 $ myrepl diagnose --defaults-group-suffix=_replica1 \
     --source-defaults-group-suffix=_primary1
-[+] Source -> 127.0.0.1 gtid_executed: 2ac8ec13-...:1-42628
+[+] Source -> 127.0.0.1 gtid_executed: 1d1fff5a-c9bc-11ed-9c19-02a36d996b94:123,
+2ac8ec13-9255-11f0-8705-6238a95b9967:1-42643,
+2af7e535-9255-11f0-87f8-76ae10baffb1:1-120069
 [+] server_uuid: 2ac8ec13-9255-11f0-8705-6238a95b9967
-[+] Target -> 127.0.0.1 gtid_executed: 2ac8ec13-...:1-42628,2af7e535-...:1-120061
+[+] Target -> 127.0.0.1 gtid_executed: 1d1fff5a-c9bc-11ed-9c19-02a36d996b94:123,
+2ac8ec13-9255-11f0-8705-6238a95b9967:1-42643,
+2af7e535-9255-11f0-87f8-76ae10baffb1:1-120076
 [+] server_uuid: 2af7e535-9255-11f0-87f8-76ae10baffb1
-[-] Errant Transactions: 2af7e535-9255-11f0-87f8-76ae10baffb1:1-120061
+[-] Errant Transactions: 2af7e535-9255-11f0-87f8-76ae10baffb1:120070-120076
 [-] Errant Transaction Found in Log Name: binlog.000006
+[dry-run] Would execute on source (single pinned session):
+    SET GTID_NEXT='2af7e535-9255-11f0-87f8-76ae10baffb1:120070'; BEGIN; COMMIT;
+    SET GTID_NEXT='2af7e535-9255-11f0-87f8-76ae10baffb1:120071'; BEGIN; COMMIT;
+    ...
+    SET GTID_NEXT='2af7e535-9255-11f0-87f8-76ae10baffb1:120076'; BEGIN; COMMIT;
+    SET GTID_NEXT='AUTOMATIC';
+[+] No Missing GTIDs
+```
+
+`diagnose` never applies these statements — it always prints them for you to
+run yourself (applying the errant GTID on the *source* is generally
+preferred over the replica: it replicates downstream, where every other
+replica auto-skips it, rather than requiring a stop/restart on each one).
+Missing transactions get the same treatment, injected on the replica since
+that's the side missing them:
+
+```
+[-] Missing GTIDs: 2ac8ec13-9255-11f0-8705-6238a95b9967:42644-42650
+[!] WARNING: injecting empty transactions for missing GTIDs marks them as
+[!] executed WITHOUT applying their data -- the source will never resend them.
+[!] The skipped transactions' data must be synced separately (e.g. data-diff).
+[dry-run] Would execute on replica (single pinned session):
+    STOP REPLICA;
+    SET SESSION sql_log_bin = 0;
+    SET GTID_NEXT='2ac8ec13-9255-11f0-8705-6238a95b9967:42644'; BEGIN; COMMIT;
+    ...
+    SET SESSION sql_log_bin = 1;
+    START REPLICA;
 ```
 
 Add `--stuck` to also check whether the replica's SQL thread is currently
@@ -174,28 +218,8 @@ Suggested commands to see exactly what's blocking:
     mysqlbinlog -h 127.0.0.1 -P 3306 -r --include-gtids='2ac8ec13-9255-11f0-8705-6238a95b9967:42490-42628' binlog.000061 | grep -iE "^(CREATE|DROP|ALTER|USE)"
 ```
 
-Once you know what's wrong, fix it in place — each mode is destructive
-(injects empty transactions, and `--fix-replica` stops/starts replication),
-so each prompts for confirmation unless you pass `--yes`, and every mode
-supports `--dry-run`:
-
-```console
-# Preview applying the errant GTID to the replica (marks it as already-executed there):
-$ myrepl diagnose --defaults-group-suffix=_replica1 \
-    --source-defaults-group-suffix=_primary1 \
-    --fix-replica --dry-run
-[dry-run] Would execute on replica (single pinned session):
-    STOP REPLICA;
-    SET SESSION sql_log_bin = 0;
-    SET GTID_NEXT='2af7e535-9255-11f0-87f8-76ae10baffb1:1'; BEGIN; COMMIT;
-    ...
-    SET SESSION sql_log_bin = 1;
-    START REPLICA;
-```
-
-Exit codes: `0` = in sync (or a fix was applied and resolved everything),
-`1` = a real error (can't connect, bad query, etc.), `2` = errant/missing
-transactions remain unresolved — handy for cron/alerting.
+Exit codes: `0` = in sync, `1` = a real error (can't connect, bad query,
+etc.), `2` = errant/missing transactions remain — handy for cron/alerting.
 
 `diagnose` delegates to
 [github.com/ChaosHour/go-gtids](https://github.com/ChaosHour/go-gtids),

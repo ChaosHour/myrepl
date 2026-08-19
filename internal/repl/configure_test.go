@@ -2,13 +2,10 @@ package repl
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 )
-
-var errBoom = errors.New("boom")
 
 func TestCoordinatesValidate(t *testing.T) {
 	cases := []struct {
@@ -176,25 +173,5 @@ func TestBuildPlanSourceFileNotFound(t *testing.T) {
 	_, err = BuildPlan(context.Background(), replicaDB, Syntax{}, "", coords, sourceDB, false)
 	if err == nil {
 		t.Fatal("expected an error for a log file the source doesn't have")
-	}
-}
-
-func TestApplyRunsStatementsInOrderAndStopsOnError(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	mock.ExpectExec("STOP REPLICA").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("CHANGE REPLICATION SOURCE TO").WillReturnError(errBoom)
-
-	plan := &Plan{Statements: []string{"STOP REPLICA", "CHANGE REPLICATION SOURCE TO SOURCE_AUTO_POSITION = 1", "START REPLICA"}}
-	err = Apply(context.Background(), db, plan)
-	if err == nil {
-		t.Fatal("expected Apply to surface the CHANGE statement's error")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err) // confirms START REPLICA was never attempted
 	}
 }

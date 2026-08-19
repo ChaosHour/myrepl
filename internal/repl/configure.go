@@ -28,8 +28,9 @@ func (c Coordinates) validate() error {
 	return nil
 }
 
-// Plan is a reviewable set of statements BuildPlan wants to run, plus any
-// warnings surfaced while building it. Nothing is executed until Apply runs.
+// Plan is a reviewable set of statements that would resolve the requested
+// coordinate change, plus any warnings surfaced while building it. myrepl
+// never executes these itself -- they're printed for the operator to run.
 type Plan struct {
 	Channel    string
 	Statements []string
@@ -139,18 +140,6 @@ func validateLogFileOnSource(ctx context.Context, sourceDB *sql.DB, coords Coord
 	}
 	if coords.LogPos > size {
 		return fmt.Errorf("requested position %d is past the end of %s on the source (size %d bytes)", coords.LogPos, coords.LogFile, size)
-	}
-	return nil
-}
-
-// Apply executes a Plan's statements in order against replicaDB, stopping at
-// the first error. Callers should re-Fetch status afterward regardless of
-// error, since STOP (or STOP+CHANGE) may already have run.
-func Apply(ctx context.Context, replicaDB *sql.DB, plan *Plan) error {
-	for _, stmt := range plan.Statements {
-		if _, err := replicaDB.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("%s: %w", stmt, err)
-		}
 	}
 	return nil
 }
