@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/ChaosHour/myrepl/internal/db"
@@ -80,7 +81,7 @@ require --force to override (they print as warnings instead of aborting).`,
 				fmt.Fprintln(out)
 			}
 			for _, w := range plan.Warnings {
-				fmt.Fprintf(out, "warning: %s\n", w)
+				fmt.Fprintln(out, color.New(color.FgYellow, color.Bold).Sprintf("warning: %s", w))
 			}
 			fmt.Fprintln(out, "plan:")
 			for _, stmt := range plan.Statements {
